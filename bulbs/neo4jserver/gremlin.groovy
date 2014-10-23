@@ -1,169 +1,132 @@
-//
-// Copyright 2012 James Thornton (http://jamesthornton.com)
-// BSD License (see LICENSE for details)
-//
+// NOTE: Converting all index values to strings because that's what Neo4j does
+// anyway, and when using the JSON type system, Rexster doesn't have a way to 
+// specify types in the URL for index lookups. This keeps the code consistent.
 
-// TODO: This will error for property values that are lists.
-//       See https://groups.google.com/forum/#!topic/neo4j/sjH2f5dulTQ
+// using closures for clarity
 
-// Model - Vertex
+// TODO: Make this support multiple indices, e.g. an autoindex and a normal index
+
+
+// Model Proxy - Vertex
 
 def create_indexed_vertex(data,index_name,keys) {
-  neo4j = g.getRawGraph()
-  manager = neo4j.index()
-  g.setMaxBufferSize(0)
-  g.startTransaction()
-  try {
-    index = manager.forNodes(index_name)
-    vertex = neo4j.createNode()
+  def createIndexedVertex = {
+    vertex = g.addVertex()
+    index = g.idx(index_name)
     for (entry in data.entrySet()) {
       if (entry.value == null) continue;
       vertex.setProperty(entry.key,entry.value)
       if (keys == null || keys.contains(entry.key))
-	index.add(vertex,entry.key,String.valueOf(entry.value))
+	index.put(entry.key,String.valueOf(entry.value),vertex)
     }
-    g.stopTransaction(TransactionalGraph.Conclusion.SUCCESS)
     return vertex
-  } catch (e) {
-    g.stopTransaction(TransactionalGraph.Conclusion.FAILURE)  
-    return e
   }
+  def transaction = { final Closure closure ->
+    try {
+      results = closure();
+      g.commit();
+      return results; 
+    } catch (e) {
+      g.rollback();
+      throw e;
+    }
+  }
+  return transaction(createIndexedVertex);
 }
 
 
 def update_indexed_vertex(_id, data, index_name, keys) {
-  vertex = g.getRawGraph().getNodeById(_id)
-  manager = g.getRawGraph().index()
-  g.setMaxBufferSize(0)
-  g.startTransaction()
-  try {
-    index = manager.forNodes(index_name)
-    index.remove(vertex)
-    for (String key in vertex.getPropertyKeys())
-      vertex.removeProperty(key)
+  def updateIndexedVertex = { 
+    vertex = g.v(_id);
+    index = g.idx(index_name);
+    // remove vertex from index
+    for (String key in vertex.getPropertyKeys()) {
+      if (keys == null || keys.contains(key)) {
+	value = vertex.getProperty(key);
+	index.remove(key, String.valueOf(value), vertex);
+      }
+    }
+    ElementHelper.removeProperties([vertex]);
+    ElementHelper.setProperties(vertex,data);
+    // add vertex to index
     for (entry in data.entrySet()) {
       if (entry.value == null) continue;
-      vertex.setProperty(entry.key,entry.value)
       if (keys == null || keys.contains(entry.key))
-	index.add(vertex,entry.key,String.valueOf(entry.value))
-    }
-    g.stopTransaction(TransactionalGraph.Conclusion.SUCCESS)
-    return vertex 
-  } catch (e) {
-    g.stopTransaction(TransactionalGraph.Conclusion.FAILURE)
-    return e
+	index.put(entry.key,String.valueOf(entry.value),vertex);
+    }    
+    return vertex;
   }
+  def transaction = { final Closure closure ->
+    try {
+      results = closure();
+      g.commit();
+      return results; 
+    } catch (e) {
+      g.rollback();
+      throw e;
+    }
+  }
+  return transaction(updateIndexedVertex);
 }
 
-// Model - Edge
+
+// Model Proxy - Edge
 
 def create_indexed_edge(outV,label,inV,data,index_name,keys,label_var) {
-  import org.neo4j.graphdb.DynamicRelationshipType;
-  neo4j = g.getRawGraph()
-  manager = neo4j.index()
-  vertex = neo4j.getNodeById(outV)
-  relationshipType = DynamicRelationshipType.withName(label)
-  g.setMaxBufferSize(0)
-  g.startTransaction()
-  try {
-    index = manager.forRelationships(index_name)
-    edge = vertex.createRelationshipTo(neo4j.getNodeById(inV),relationshipType)
+  def createIndexedEdge = {
+    index = g.idx(index_name)
+    edge = g.addEdge(g.v(outV),g.v(inV),label)
     for (entry in data.entrySet()) {
       if (entry.value == null) continue;
       edge.setProperty(entry.key,entry.value)
       if (keys == null || keys.contains(entry.key))
-	index.add(edge,entry.key,String.valueOf(entry.value))
+	index.put(entry.key,String.valueOf(entry.value),edge)
     }
-    index.add(edge,label_var,String.valueOf(label))
-    g.stopTransaction(TransactionalGraph.Conclusion.SUCCESS)
+    index.put(label_var,String.valueOf(label),edge)
     return edge
-  } catch (e) {
-    g.stopTransaction(TransactionalGraph.Conclusion.FAILURE)
-    return e
   }
+  def transaction = { final Closure closure ->
+    try {
+      results = closure();
+      g.commit();
+      return results; 
+    } catch (e) {
+      g.rollback();
+      throw e;
+    }
+  }
+  return transaction(createIndexedEdge);
 }
 
 // don't need to update indexed label, it can't change
 def update_indexed_edge(_id, data, index_name, keys) {
-  neo4j = g.getRawGraph()
-  manager = neo4j.index()
-  edge = neo4j.getRelationshipById(_id)
-  g.setMaxBufferSize(0)
-  g.startTransaction()
-  try {
-    index = manager.forRelationships(index_name)
-    index.remove(edge)
-    for (String key in edge.getPropertyKeys())
-      edge.removeProperty(key)
+  def updateIndexedEdge = {
+    edge = g.e(_id);
+    index = g.idx(index_name);
+    for (String key in edge.getPropertyKeys()) {
+      if (keys == null || keys.contains(key)) {
+	value = edge.getProperty(key)
+	index.remove(key, String.valueOf(value), edge);
+      }
+    }
+    ElementHelper.removeProperties([edge]);
+    ElementHelper.setProperties(edge,data);
     for (entry in data.entrySet()) {
       if (entry.value == null) continue;
-      edge.setProperty(entry.key,entry.value)
       if (keys == null || keys.contains(entry.key))
-	index.add(edge,entry.key,String.valueOf(entry.value))
+	index.put(entry.key,String.valueOf(entry.value),edge)
+    return edge;
     }
-    g.stopTransaction(TransactionalGraph.Conclusion.SUCCESS)
-    return edge
-  } catch (e) { 
-    g.stopTransaction(TransactionalGraph.Conclusion.FAILURE)
-    return e
   }
-}
-
-// Indices
-
-def get_or_create_vertex_index(index_name, config) {
-  neo4j = g.getRawGraph()
-  manager = g.getRawGraph().index()
-  index = manager.forNodes(index_name, config)
-  return index
-}
-
-def get_or_create_edge_index(index_name, config) {
-  neo4j = g.getRawGraph()
-  manager = g.getRawGraph().index()
-  index = manager.forRelationships(index_name, config)
-  return index
-}
-
-def query_exact_index(index_name, key, query_string) {
-  // Neo4jTokens.QUERY_HEADER = "%query%"
-  return g.idx(index_name).get(key, Neo4jTokens.QUERY_HEADER + query_string)
-}
-
-// Metadata
-
-def get_metadata(key, default_value) {
-  neo4j = g.getRawGraph();
-  properties = neo4j.getKernelData().properties();
-  return properties.getProperty(key, default_value);
-}
-
-def set_metadata(key, value) {  
-  g.setMaxBufferSize(0)
-  g.startTransaction()
-  try {
-    neo4j = g.getRawGraph();
-    properties = neo4j.getKernelData().properties();
-    resp = properties.setProperty(key, value);
-    g.stopTransaction(TransactionalGraph.Conclusion.SUCCESS)
-    return resp
-  } catch (e) { 
-    g.stopTransaction(TransactionalGraph.Conclusion.FAILURE)
-    return e
+  def transaction = { final Closure closure ->
+    try {
+      results = closure();
+      g.commit();
+      return results; 
+    } catch (e) {
+      g.rollback();
+      throw e;
+    }
   }
-}
-
-def remove_metadata(key) {
-  g.setMaxBufferSize(0)
-  g.startTransaction()
-  try {
-    neo4j = g.getRawGraph();
-    properties = neo4j.getKernelData().properties();
-    resp = properties.removeProperty(key);
-    g.stopTransaction(TransactionalGraph.Conclusion.SUCCESS)
-    return resp
-  } catch (e) { 
-    g.stopTransaction(TransactionalGraph.Conclusion.FAILURE)
-    return e
-  }
+  return transaction(updateIndexedEdge);
 }
